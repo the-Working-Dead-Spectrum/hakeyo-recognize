@@ -14,6 +14,16 @@ from .database import (
     get_candidate_tracks,
     count_tracks,
     count_fingerprints,
+    find_matches_by_hashes,
+)
+
+from .validation import (
+    ValidationError,
+    validate_audio_file,
+    validate_audio_for_recognition,
+    ALLOWED_EXTENSIONS,
+    MAX_FILE_SIZE_BYTES,
+    MIN_AUDIO_DURATION_SEC,
 )
 
 __all__ = [
@@ -27,4 +37,11 @@ __all__ = [
     "get_candidate_tracks",
     "count_tracks",
     "count_fingerprints",
+    "find_matches_by_hashes",
+    "ValidationError",
+    "validate_audio_file",
+    "validate_audio_for_recognition",
+    "ALLOWED_EXTENSIONS",
+    "MAX_FILE_SIZE_BYTES",
+    "MIN_AUDIO_DURATION_SEC",
 ]
