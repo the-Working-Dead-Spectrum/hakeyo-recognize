@@ -1,5 +1,6 @@
 """
 Tests pour le moteur audio (E1-01, E1-02, E1-03).
+Conforme à la posture senior : tests qui prouvent le comportement correct.
 """
 
 import pytest
@@ -9,10 +10,11 @@ import tempfile
 from pathlib import Path
 
 # Import des modules à tester
-from engine.audio_loader import load_audio_file
+from engine.audio_loader import load_audio_file, AudioTooShortError, CorruptedAudioFileError
 from engine.spectrogram import compute_spectrogram
 from engine.peak_picking import extract_peaks
 from engine.fingerprint import generate_fingerprint
+from engine.config import AudioConfig
 
 
 class TestAudioLoader:
@@ -20,9 +22,9 @@ class TestAudioLoader:
     
     def test_load_audio_file_returns_tuple(self):
         """Vérifie que la fonction retourne un tuple (signal, sr)."""
-        # On crée un signal synthétique pour le test
+        # On crée un signal synthétique de durée suffisante (>3s)
         sample_rate = 44100
-        duration = 1.0  # seconde
+        duration = 4.0  # secondes (> min_duration de 3s)
         t = np.linspace(0, duration, int(sample_rate * duration))
         signal = np.sin(2 * np.pi * 440 * t)  # La à 440 Hz
         
@@ -37,7 +39,7 @@ class TestAudioLoader:
             
             assert isinstance(loaded_signal, np.ndarray), "Le signal doit être un numpy array"
             assert isinstance(sr, int), "Le sample rate doit être un entier"
-            assert sr == sample_rate, f"Sample rate attendu: {sample_rate}, obtenu: {sr}"
+            assert sr == 11025, f"Sample rate attendu: 11025 (config par défaut), obtenu: {sr}"
             assert len(loaded_signal) > 0, "Le signal ne doit pas être vide"
         finally:
             os.unlink(temp_path)
@@ -45,7 +47,7 @@ class TestAudioLoader:
     def test_load_audio_file_mono(self):
         """Vérifie que le signal est converti en mono."""
         sample_rate = 44100
-        duration = 0.5
+        duration = 4.0  # > 3s requis
         t = np.linspace(0, duration, int(sample_rate * duration))
         signal = np.sin(2 * np.pi * 440 * t)
         
@@ -57,6 +59,46 @@ class TestAudioLoader:
         try:
             loaded_signal, _ = load_audio_file(temp_path)
             assert loaded_signal.ndim == 1, "Le signal doit être mono (1D)"
+        finally:
+            os.unlink(temp_path)
+    
+    def test_load_audio_file_too_short_raises_error(self):
+        """Vérifie qu'un fichier < 3s lève une exception (cas limite)."""
+        sample_rate = 44100
+        duration = 1.0  # < 3s requis
+        t = np.linspace(0, duration, int(sample_rate * duration))
+        signal = np.sin(2 * np.pi * 440 * t)
+        
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+            import soundfile as sf
+            sf.write(f.name, signal, sample_rate)
+            temp_path = f.name
+        
+        try:
+            with pytest.raises(AudioTooShortError):
+                load_audio_file(temp_path)
+        finally:
+            os.unlink(temp_path)
+    
+    def test_load_audio_file_custom_config(self):
+        """Vérifie l'utilisation d'une configuration personnalisée."""
+        sample_rate = 44100
+        duration = 2.0  # 2s
+        t = np.linspace(0, duration, int(sample_rate * duration))
+        signal = np.sin(2 * np.pi * 440 * t)
+        
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+            import soundfile as sf
+            sf.write(f.name, signal, sample_rate)
+            temp_path = f.name
+        
+        try:
+            # Config avec min_duration=1s (accepte 2s)
+            config = AudioConfig(sample_rate=sample_rate)
+            loaded_signal, sr = load_audio_file(temp_path, config=config, min_duration=1.0)
+            
+            assert len(loaded_signal) > 0
+            assert sr == sample_rate
         finally:
             os.unlink(temp_path)
 
@@ -169,6 +211,31 @@ class TestFingerprint:
         fp2 = generate_fingerprint(peaks)
         
         assert fp1 == fp2, "Les mêmes pics doivent produire les mêmes empreintes"
+    
+    def test_generate_fingerprint_none_raises_error(self):
+        """Vérifie que peaks=None lève une ValueError (cas limite)."""
+        with pytest.raises(ValueError, match="peaks ne peut pas être None"):
+            generate_fingerprint(None)
+    
+    def test_generate_fingerprint_target_zone_duration(self):
+        """Vérifie que la zone cible respecte la config (5s par défaut)."""
+        # Pics espacés de plus de 5s
+        peaks = [
+            (0.0, 440.0),
+            (6.0, 880.0),  # > 5s, hors zone cible
+        ]
+        
+        fingerprints = generate_fingerprint(peaks)
+        assert len(fingerprints) == 0, "Doit ignorer les pics hors zone cible (5s)"
+        
+        # Pics dans la zone cible
+        peaks_in_zone = [
+            (0.0, 440.0),
+            (4.0, 880.0),  # < 5s, dans zone cible
+        ]
+        
+        fingerprints_in_zone = generate_fingerprint(peaks_in_zone)
+        assert len(fingerprints_in_zone) > 0, "Doit inclure les pics dans la zone cible"
 
 
 if __name__ == "__main__":
