@@ -198,9 +198,10 @@ def recognize_audio(
     
     # Convertir les fingerprints de la requête en dict {hash: offset_frame}
     # Note: generate_fingerprints retourne (hash_str, offset_sec), on doit convertir en frames
-    from engine.config import SAMPLE_RATE, HOP_LENGTH
+    from engine.config import AudioConfig
+    audio_config = AudioConfig()
     query_fingerprints_dict = {
-        fp[0]: int(fp[1] * SAMPLE_RATE / HOP_LENGTH)  # offset_sec -> offset_frame
+        fp[0]: int(fp[1] * audio_config.sample_rate / audio_config.hop_length)  # offset_sec -> offset_frame
         for fp in fingerprints
     }
     
