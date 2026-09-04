@@ -187,6 +187,19 @@ L'index sur `hash` est non négociable — sans lui, le matching devient inutili
 ### `GET /tracks`, `POST /tracks`
 Gestion basique du catalogue de référence (CRUD minimal, pas de pagination avancée en V0.2).
 
+### 6.1 Conventions du script CLI `recognize.py` (E2-04)
+
+- **Format de sortie** : texte lisible par défaut (usage humain), flag `--json` pour une sortie structurée conforme au contrat de la section 6 (usage scriptable/intégration).
+- **Codes retour** :
+  - `0` : exécution réussie, que le résultat métier soit `match: true` ou `match: false` (un "no match" est un résultat normal, pas une erreur).
+  - `1` : erreur technique fatale (fichier introuvable/illisible, extrait trop court, DB vide/inaccessible, fichier corrompu).
+- **Validation d'entrée** (fonction partagée, pas dupliquée dans `recognize.py` — voir section 7.1 DRY) :
+  - Résolution du chemin en absolu, vérification d'existence et de lisibilité.
+  - Vérification de l'extension/type MIME réel du fichier audio.
+  - Cette même fonction sera réutilisée par l'endpoint `/recognize` (E3-01), où elle devient alors un contrôle de sécurité au sens de la section 7.2 (le chemin CLI local n'a pas de frontière de confiance à protéger, contrairement à un upload réseau — mais le code doit être écrit une seule fois).
+- **Durée minimale de l'extrait** : `MIN_AUDIO_DURATION_SEC = 2.0`. En dessous, le peak-picking (section 4, étape 2) ne génère pas assez de paires ancre/cible pour un matching fiable, indépendamment du score de confiance. Un extrait trop court doit lever une erreur de validation explicite (code retour 1), pas être traité comme un "no match" silencieux.
+- **Fallback ARCCloud (E2-04)** : simulé uniquement à ce stade — log explicite (`[FALLBACK] Appel ARCCloud...`) sans appel réseau réel, si le score de confiance est sous `CONFIDENCE_THRESHOLD`. L'intégration réelle est portée par E2-05, hors périmètre de cette story.
+
 ---
 
 ## 7. Conventions de code
