@@ -89,6 +89,7 @@ class SecurityConfig:
             self.allowed_mime_types = [
                 "audio/mpeg",
                 "audio/wav",
+                "audio/x-wav",
                 "audio/ogg",
                 "audio/flac",
                 "audio/mp4",
