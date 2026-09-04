@@ -1,1 +1,13 @@
-Nothing should be ignored based on the provided file changes. The only modified file is `scripts/recognize.py`, which is a source code file and should not be added to .gitignore.
+```
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Test coverage and temporary files
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+```
