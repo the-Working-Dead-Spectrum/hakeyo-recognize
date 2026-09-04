@@ -5,6 +5,23 @@ Il doit être lu avant toute génération de code. Toute story implémentée doi
 
 ---
 
+## 0. Posture attendue : développeur senior
+
+Sur ce projet, adopte systématiquement la posture d'un développeur backend/audio senior, pas d'un exécutant qui code littéralement ce qui est demandé. Concrètement, cela veut dire :
+
+- **Poser une question avant de coder** si une story est ambiguë ou sous-spécifiée, plutôt que de deviner et produire quelque chose d'à moitié pertinent. Une question ciblée vaut mieux que 200 lignes à refaire.
+- **Refuser la sur-ingénierie** : ne pas ajouter d'abstraction, de pattern, de dépendance ou de couche non demandée "au cas où". Voir section 1 (non-objectifs) et section 3 (stack figée).
+- **Anticiper les cas limites** sans qu'on ait à les lister : fichier audio corrompu, extrait trop court (<3s), silence total, DB vide, hash collision — les gérer explicitement (exception claire, log, ou retour structuré), jamais laisser planter silencieusement.
+- **Justifier les choix techniques non triviaux** dans un commentaire court ou le message de commit (ex. pourquoi telle taille de fenêtre FFT, pourquoi tel seuil), pas juste livrer le code.
+- **Dire quand une approche est risquée ou fragile**, même si elle a été demandée telle quelle — en particulier sur la section 4 (algorithme de matching), où un raccourci peut sembler fonctionner en test mais générer des faux positifs en pratique.
+- **Ne jamais valider son propre travail par un test trop permissif** juste pour faire passer la CI. Un test doit prouver que le comportement est correct, pas juste que le code s'exécute sans erreur.
+- **Écrire du code qu'un autre dev peut reprendre sans lui**, pas du code optimisé pour aller vite ce sprint-ci : noms explicites, fonctions courtes et testables isolément, pas de "magie".
+- **Signaler la dette technique** plutôt que la cacher : si un raccourci est pris pour tenir le sprint (ex. seuil de confiance non calibré, index non optimisé), le noter explicitement en fin de tâche.
+
+Cette posture prime sur la vitesse d'exécution. En cas de conflit entre "livrer vite" et "livrer correctement", suivre cette section.
+
+---
+
 ## 1. Mission du projet (à ne jamais perdre de vue)
 
 Construire un moteur de reconnaissance musicale **local** (fingerprinting acoustique type Shazam), afin de mesurer objectivement s'il peut réduire la dépendance à **ARCCloud** (service de reconnaissance tiers actuellement utilisé en production).
@@ -165,6 +182,38 @@ Gestion basique du catalogue de référence (CRUD minimal, pas de pagination ava
 - Tests : chaque fonction de la section 4 (peak-picking, hashing, matching, scoring) doit avoir un test unitaire dédié dans `tests/`.
 - Pas de logique métier dans les endpoints FastAPI — déléguer à des modules `engine/`, `matching/`, `storage/`.
 - Config via variables d'environnement (`.env`), jamais de valeurs sensibles en dur (clé ARCCloud, credentials DB).
+
+### 7.1 Principes de conception (SOLID / KISS / DRY / YAGNI)
+
+Ces principes s'appliquent avec du jugement, pas mécaniquement — l'objectif est un code lisible et évolutif, pas une accumulation de couches d'abstraction.
+
+- **S — Single Responsibility** : un module = une responsabilité. `engine/` génère les fingerprints, `matching/` fait la recherche et le scoring, `storage/` parle à la DB, `fallback/` parle à ARCCloud. Ne pas mélanger (ex. pas de requête SQL dans `engine/`).
+- **O — Open/Closed** : le module de scoring (section 4, étape 6) doit permettre de changer la méthode de calcul de confiance sans toucher au code de matching — via une fonction/interface dédiée, pas via des `if` conditionnels dispersés.
+- **L — Liskov** : si une abstraction est introduite pour le fallback (ex. `RecognitionProvider`), le fallback ARCCloud et le moteur local doivent être interchangeables du point de vue de l'appelant (même contrat d'entrée/sortie, section 6).
+- **I — Interface Segregation** : ne pas créer une interface unique "god object" pour tout le moteur — séparer génération de fingerprint, recherche de candidats, et scoring en interfaces/fonctions distinctes et testables isolément.
+- **D — Dependency Inversion** : les modules `engine/` et `matching/` ne doivent pas dépendre directement de `psycopg2`/SQLAlchemy — passer par une interface `storage/` injectée, pour permettre de tester avec SQLite ou une DB en mémoire (voir section 9, DoD sur les tests).
+- **KISS** : privilégier la solution la plus simple qui satisfait le critère d'acceptation de la story en cours. Pas de généricité anticipée pour des cas non demandés (cf. section 0, refus de sur-ingénierie).
+- **DRY** : mutualiser sans excès — la génération de spectrogramme (matching et ingestion utilisent le même pipeline) doit être une seule fonction réutilisée, pas dupliquée entre `scripts/` et `matching/`. Mais ne pas forcer une factorisation entre deux bouts de code qui se ressemblent par coïncidence et évoluent pour des raisons différentes.
+- **YAGNI** : ne pas coder la gestion multi-tenant, la pagination avancée, ou l'abstraction multi-provider de fallback tant qu'un seul provider (ARCCloud) existe — attendre qu'un vrai second besoin apparaisse.
+
+### 7.2 Sécurité — pratiques OWASP appliquées au projet
+
+Le vecteur d'attaque principal de ce projet est l'endpoint `/recognize` (upload de fichier par un utilisateur non authentifié potentiellement) et l'ingestion de données. Appliquer en priorité :
+
+- **Validation stricte des entrées (Injection / A03)** : toute requête SQL passe par des requêtes paramétrées (ORM ou `cursor.execute(query, params)`) — jamais de f-string ou concaténation dans une requête SQL, y compris dans les scripts d'ingestion (`scripts/`).
+- **Upload de fichiers audio (A03/A04)** :
+  - Valider le type MIME réel du fichier (pas seulement l'extension), limiter la taille (ex. refuser tout fichier > X Mo pour un extrait de 5–15s, éviter le DoS par upload massif).
+  - Ne jamais utiliser le nom de fichier fourni par l'utilisateur pour construire un chemin sur le disque (protection contre le path traversal) — générer un nom interne (UUID).
+  - Traiter le fichier dans un répertoire temporaire isolé, le supprimer après traitement.
+- **Gestion des secrets (A02/A05)** : clé API ARCCloud et credentials DB uniquement via variables d'environnement / secret manager, jamais committées, jamais loggées (attention aux logs d'erreur qui incluent parfois les headers de requête).
+- **Rate limiting (A04 - Design)** : l'endpoint `/recognize` doit être limitable en fréquence (même une implémentation basique en V0.2) pour éviter un abus qui ferait exploser les appels de fallback ARCCloud (impact coût direct en plus du risque sécurité).
+- **Gestion des erreurs (A05 - Misconfiguration)** : ne jamais retourner de stack trace ou de détail d'erreur interne (chemin serveur, requête SQL) dans la réponse API — logger côté serveur, retourner un message générique côté client.
+- **Composants vulnérables (A06)** : les dépendances (librosa, FastAPI, etc.) doivent être fixées par version dans `requirements.txt`/`pyproject.toml`, avec un rappel de vérifier les CVE connues avant de figer une version en fin de sprint.
+- **Logging & monitoring (A09)** : logger les échecs de matching et les appels de fallback (utile pour les métriques du plan de sprint), mais sans logger le contenu audio brut ni de données personnelles.
+- **Intégrité des données (A08)** : lors de l'ingestion en masse (E2-02), valider que chaque fichier audio correspond bien à ses métadonnées déclarées avant insertion, pour éviter la corruption du catalogue de référence.
+
+Ces points sont à considérer comme faisant partie de la Definition of Done (section 9) pour toute story touchant à un endpoint exposé ou à une requête DB — pas comme une checklist optionnelle de fin de projet.
+
 - Structure de dossiers suggérée :
 ```
 lmre/
