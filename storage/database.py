@@ -302,3 +302,45 @@ def count_fingerprints(db: Database) -> int:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) as count FROM fingerprints")
         return cursor.fetchone()["count"]
+
+
+def find_matches_by_hashes(
+    db: Database,
+    hashes: List[str]
+) -> List[Tuple[str, int, float]]:
+    """
+    Récupère tous les matches en BDD pour une liste de hashes donnée.
+    
+    Requête SQL batchée optimisée: SELECT ... WHERE hash = ANY(%s)
+    Retourne les correspondances brutes pour construction de l'histogramme.
+    
+    Args:
+        db: Instance de Database
+        hashes: Liste des hashes de la capture à rechercher
+    
+    Returns:
+        Liste de tuples [(hash, track_id, offset_db), ...]
+        Ex: [("abc123", 1, 0.5), ("abc123", 2, 1.2), ("def456", 1, 2.3)]
+    
+    Note technique:
+        - Utilise WHERE hash IN (...) avec requête paramétrée
+        - Exploite l'index idx_fingerprint_hash (obligatoire selon QWEN.md Section 5)
+        - Conforme YAGNI: pas d'optimisation prématurée, une seule requête SQL
+    """
+    if not hashes:
+        return []
+    
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Créer les placeholders pour la requête paramétrée
+        placeholders = ','.join('?' * len(hashes))
+        query = f"""
+            SELECT hash, track_id, offset
+            FROM fingerprints
+            WHERE hash IN ({placeholders})
+        """
+        
+        cursor.execute(query, hashes)
+        
+        return [(row['hash'], row['track_id'], row['offset']) for row in cursor.fetchall()]
