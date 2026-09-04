@@ -124,6 +124,20 @@ Table `fingerprints(hash, track_id, offset)`, indexée sur `hash` (voir section 
 - Retourner une valeur entre 0 et 1.
 - Définir un seuil de décision (`CONFIDENCE_THRESHOLD`, configurable, valeur de départ suggérée : 0.15 à ajuster empiriquement) sous lequel le système déclare `no match` et bascule vers ARCCloud.
 
+### 4.1 Paramètres de matching — décisions actées (à calibrer empiriquement en Sprint 5 / E4-02)
+
+Ces valeurs sont des points de départ, pas des vérités figées — elles doivent être révisées avec les mesures d'accuracy réelles.
+
+| Paramètre | Décision | Justification |
+|---|---|---|
+| Granularité de `offset` | Index de frame entier (issu du `hop_length` du STFT), pas des secondes flottantes | Un binning en secondes (ex. 0.5s) est trop grossier et fait apparaître des faux positifs statistiques sur des hash non liés |
+| Tolérance d'alignement | ±1 à 2 frames autour du `delta_offset` dominant | Absorbe le bruit de quantification sans perdre en discrimination |
+| Seuil de décision (voting) | Un seul paramètre : `CONFIDENCE_THRESHOLD` (pas de seuil de vote séparé) | Le seuil de vote et le score de confiance (étape 6) sont la même mesure — éviter la duplication |
+| Valeur de départ `CONFIDENCE_THRESHOLD` | 5 % du total de hash de la capture | Point de départ à recalibrer en Sprint 5 avec le dataset réel |
+| Plancher absolu | Minimum 5 hash alignés, en complément du seuil relatif | Sur un extrait très court, un pourcentage seul peut être statistiquement non significatif |
+| Gestion des ex-aequo | Top-1 exposé en sortie (API), top-3 candidats classés loggés en interne | Le contrat d'API (section 6) ne prévoit qu'un résultat ; le top-3 sert au diagnostic des faux positifs (intros/remix similaires) en Sprint 5 |
+| Stratégie de requête DB pour le matching | Une seule requête SQL batchée (`WHERE hash = ANY(%s)`) avec tous les hash de la capture, traitement de l'histogramme en mémoire (numpy) | Scale correctement de 100 à 10 000 morceaux grâce à l'index sur `hash` (section 5) ; évite de préjuger d'une optimisation non mesurée (YAGNI) |
+
 ---
 
 ## 5. Schéma de données
