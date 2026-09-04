@@ -84,6 +84,7 @@ RESULT  ARCCloud (fallback)
 | API | FastAPI | V0.2 |
 | Queue | Redis + RQ (préféré à Celery pour la simplicité) | V0.2 |
 | Conteneurisation | Docker / docker-compose | V0.2 |
+| Client HTTP (fallback ARCCloud) | `requests` | V0.2 — ajouté pour E2-05 : gestion de timeout/JSON/erreurs plus sûre que `urllib` pour un coût de dépendance quasi nul, librairie mature et très auditée |
 
 **Ne pas introduire de dépendance hors de cette liste sans justification explicite dans le message de commit.**
 
@@ -199,6 +200,15 @@ Gestion basique du catalogue de référence (CRUD minimal, pas de pagination ava
   - Cette même fonction sera réutilisée par l'endpoint `/recognize` (E3-01), où elle devient alors un contrôle de sécurité au sens de la section 7.2 (le chemin CLI local n'a pas de frontière de confiance à protéger, contrairement à un upload réseau — mais le code doit être écrit une seule fois).
 - **Durée minimale de l'extrait** : `MIN_AUDIO_DURATION_SEC = 2.0`. En dessous, le peak-picking (section 4, étape 2) ne génère pas assez de paires ancre/cible pour un matching fiable, indépendamment du score de confiance. Un extrait trop court doit lever une erreur de validation explicite (code retour 1), pas être traité comme un "no match" silencieux.
 - **Fallback ARCCloud (E2-04)** : simulé uniquement à ce stade — log explicite (`[FALLBACK] Appel ARCCloud...`) sans appel réseau réel, si le score de confiance est sous `CONFIDENCE_THRESHOLD`. L'intégration réelle est portée par E2-05, hors périmètre de cette story.
+
+### 6.2 Module `fallback/ArcCloudProvider` — conventions (E2-05)
+
+- **Contrat API** : mock réaliste piloté par `ARCCLOUD_API_URL` (env var), avec un contrat JSON fictif mais plausible. **Marqué explicitement comme hypothèse à vérifier** dès que la documentation réelle d'ARCCloud sera disponible — ne pas le faire passer pour un contrat validé (dette technique à signaler, section 0).
+- **Timeout** : 5 secondes, sans retry automatique (le fallback ne doit pas ajouter sa propre couche de résilience sur un fallback déjà existant — KISS/YAGNI).
+- **Distinction erreur technique / no-match métier** : une exception dédiée `ArcCloudUnavailableError` doit être levée en cas de timeout ou d'erreur réseau/HTTP, et attrapée explicitement par l'appelant (`recognize.py`) pour être loguée distinctement d'un `match: false` normal. Ne jamais faire remonter les deux cas sous la même forme.
+- **Normalisation** : `ArcCloudProvider` est seul responsable de convertir la réponse ARCCloud brute vers le `RecognitionResult` interne standard (section 6). Aucune logique conditionnelle liée à ARCCloud ne doit fuiter hors de ce module (Dependency Inversion, section 7.1).
+- **Secrets** : `ARCCLOUD_API_KEY` et `ARCCLOUD_API_URL` obligatoires via variables d'environnement ; erreur explicite et immédiate si absentes. La valeur de la clé ne doit **jamais** apparaître dans un message d'erreur ou un log, même partiellement.
+- **Client HTTP** : `requests` (voir section 3).
 
 ---
 
