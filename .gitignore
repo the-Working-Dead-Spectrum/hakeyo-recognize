@@ -1,41 +1,13 @@
 ```
-# Database files
-*.db
-
-# Python
+# Python cache files
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.Python
-env/
-venv/
-.venv/
-.ENV
-.env
-.env.local
-.env.*
+
+# Test coverage and temporary files
 .pytest_cache/
 .coverage
+coverage/
 htmlcov/
-.eggs/
-*.egg-info/
-dist/
-build/
-*.so
-.libs/
-
-# Logs
-*.log
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-
-# OS
-.DS_Store
-Thumbs.db
 ```
