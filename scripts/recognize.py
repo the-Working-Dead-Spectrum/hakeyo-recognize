@@ -15,7 +15,7 @@ Ce script :
 2. Génère les fingerprints de l'extrait
 3. Interroge la base de données pour trouver des candidats
 4. Construit l'histogramme des deltas et calcule le score de confiance
-5. Retourne le meilleur match si confidence >= CONFIDENCE_THRESHOLD
+5. Retourne le meilleur match si la confiance dépasse le seuil (MatchingConfig)
 6. Simule le fallback ARCCloud si aucun match local n'est trouvé
 
 Conforme QWEN.md :
@@ -32,28 +32,29 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+if sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # Imports du projet
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from storage import (
     Database,
-    find_matches_by_hashes,
     get_track_by_id,
     ValidationError,
     validate_audio_for_recognition,
 )
 from engine import (
     load_audio_file,
+    compute_spectrogram,
     extract_peaks,
     generate_fingerprint,
 )
-from matching import (
-    build_offset_histogram,
-    find_best_match,
-    MatchResult,
-)
+from engine.config import AudioConfig, MatchingConfig, FingerprintConfig
+from matching import MatchResult
+from matching.matcher import Matcher
 
 # Configuration - seuil de confiance pour le matching
-# Valeur par défaut: 0.15 (à calibrer empiriquement selon QWEN.md Section 4.1)
-CONFIDENCE_THRESHOLD = 0.05  # 5% comme décidé dans les paramètres de matching
+# Valeur par défaut: dérivée de MatchingConfig (engine/config.py)
 
 
 def recognize_audio(
@@ -83,13 +84,18 @@ def recognize_audio(
         }
     """
     start_time = time.time()
+    audio_config = AudioConfig()
+    matching_config = MatchingConfig()
     
     # 1. Validation du fichier audio
     if verbose:
         print(f"[VALIDATION] Vérification du fichier: {audio_path}")
     
     try:
-        validated_path, metadata = validate_audio_for_recognition(audio_path)
+        validated_path, metadata = validate_audio_for_recognition(
+            audio_path,
+            sample_rate=audio_config.sample_rate,
+        )
     except ValidationError as e:
         return {
             "match": False,
@@ -115,12 +121,13 @@ def recognize_audio(
             "source": "none"
         }
     
-    # 3. Extraction des pics
+    # 3. Spectrogramme + extraction des pics
     if verbose:
         print("[PEAKS] Extraction des pics spectraux...")
     
     try:
-        peaks = extract_peaks(y, sr)
+        spectrogram, times, freqs = compute_spectrogram(y, sr=sr)
+        peaks = extract_peaks(spectrogram, times, freqs, max_peaks=500)
         if len(peaks) == 0:
             return {
                 "match": False,
@@ -144,7 +151,8 @@ def recognize_audio(
         print("[FINGERPRINT] Génération des empreintes...")
     
     try:
-        fingerprints = generate_fingerprint(peaks, sr)
+        fingerprint_config = FingerprintConfig()
+        fingerprints = generate_fingerprint(peaks, config=fingerprint_config)
         if len(fingerprints) == 0:
             return {
                 "match": False,
@@ -163,117 +171,83 @@ def recognize_audio(
     if verbose:
         print(f"[FINGERPRINT] {len(fingerprints)} empreintes générées")
     
-    # 5. Recherche des matches en BDD
+    # 5. Matching via Matcher (alignement temporel + scoring)
     if verbose:
         print("[MATCHING] Recherche dans la base de données...")
     
-    query_hashes = [fp[0] for fp in fingerprints]  # Liste des hash strings
-    matches_raw = find_matches_by_hashes(db, query_hashes)
-    
-    if verbose:
-        print(f"[MATCHING] {len(matches_raw)} correspondances brutes trouvées")
-    
-    if not matches_raw:
-        # Aucun candidat en BDD
-        result = {
+    try:
+        matcher = Matcher(
+            db,
+            hop_length=audio_config.hop_length,
+            sr=audio_config.sample_rate,
+            min_absolute_matches=matching_config.min_hash_matches,
+            min_relative_ratio=matching_config.confidence_threshold,
+            verbose=verbose,
+        )
+        match_result = matcher.recognize(fingerprints)
+    except Exception as e:
+        return {
             "match": False,
-            "confidence": 0.0,
+            "error": f"Erreur lors du matching: {str(e)}",
             "processing_time_ms": int((time.time() - start_time) * 1000),
-            "source": "local",
-            "top_candidates": [],
-            "message": "Aucun candidat trouvé dans la base de données"
+            "source": "none"
         }
-        
-        # Simulation du fallback ARCCloud
-        print("\n[FALLBACK] Aucun match local trouvé. Appel simulé à ARCCloud...")
-        print("[FALLBACK] Dans une implémentation réelle, l'API ARCCloud serait invoquée ici.")
-        result["source"] = "arccloud_simulated"
-        result["arccloud_status"] = "no_call_made_simulation_only"
-        
-        return result
-    
-    # 6. Construction de l'histogramme et recherche du meilleur match
-    if verbose:
-        print("[HISTOGRAM] Construction de l'histogramme des offsets...")
-    
-    # Convertir les fingerprints de la requête en dict {hash: offset_frame}
-    # Note: generate_fingerprints retourne (hash_str, offset_sec), on doit convertir en frames
-    from engine.config import AudioConfig
-    audio_config = AudioConfig()
-    query_fingerprints_dict = {
-        fp[0]: int(fp[1] * audio_config.sample_rate / audio_config.hop_length)  # offset_sec -> offset_frame
-        for fp in fingerprints
-    }
-    
-    histogram_result = build_offset_histogram(
-        matches_raw=matches_raw,
-        query_fingerprints=query_fingerprints_dict
-    )
-    
-    if verbose:
-        print(f"[HISTOGRAM] {len(histogram_result['candidates'])} candidats analysés")
-    
-    # 7. Sélection du meilleur match avec seuil de confiance
-    best_match = find_best_match(
-        histogram_result=histogram_result,
-        total_query_hashes=len(fingerprints),
-        min_absolute_matches=5,  # Plancher absolu (QWEN.md Section 4.1)
-        min_relative_ratio=CONFIDENCE_THRESHOLD  # Seuil relatif (5% par défaut)
-    )
     
     processing_time_ms = int((time.time() - start_time) * 1000)
     
-    # 8. Formatage du résultat
-    if best_match is None or not best_match.is_match:
-        # Aucun match ne dépasse les seuils
+    # 6. Formatage du résultat
+    if match_result.match:
         result = {
-            "match": False,
-            "confidence": best_match.confidence if best_match else 0.0,
+            "match": True,
+            "track_id": match_result.track_id,
+            "title": match_result.title,
+            "artist": match_result.artist,
+            "confidence": round(match_result.confidence, 4),
             "processing_time_ms": processing_time_ms,
             "source": "local",
-            "top_candidates": [],
-            "message": f"Confidence insuffisante: {best_match.confidence:.3f} < {CONFIDENCE_THRESHOLD}" if best_match else "Aucun candidat"
+            "aligned_hashes": match_result.aligned_hash_count,
+            "delta_offset_frames": match_result.best_delta_offset,
+            "top_candidates": [
+                {"track_id": c.track_id, "confidence": c.confidence, "aligned_hashes": c.aligned_hash_count}
+                for c in match_result.top_candidates[:3]
+            ] if match_result.top_candidates else []
         }
         
-        # Simulation du fallback ARCCloud
-        print(f"\n[FALLBACK] Confidence trop faible ({result['confidence']:.3f}). Appel simulé à ARCCloud...")
-        print("[FALLBACK] Dans une implémentation réelle, l'API ARCCloud serait invoquée ici.")
-        result["source"] = "arccloud_simulated"
-        result["arccloud_status"] = "no_call_made_simulation_only"
-        
-        # Inclure le top-3 pour diagnostic même en cas d'échec
-        if best_match and hasattr(best_match, 'top_candidates'):
-            result["top_candidates"] = [
-                {"track_id": c.track_id, "confidence": c.confidence, "aligned_hashes": c.aligned_hash_count}
-                for c in best_match.top_candidates[:3]
-            ]
+        if verbose:
+            print(f"\n[MATCH] {result['title']} - {result['artist']}")
+            print(f"[MATCH] Confiance: {result['confidence']:.2%}")
+            print(f"[MATCH] Hashes alignés: {result['aligned_hashes']}")
+            print(f"[MATCH] Temps de traitement: {result['processing_time_ms']}ms")
         
         return result
     
-    # Match trouvé !
-    track_info = get_track_by_id(db, best_match.track_id)
-    
+    # No match
     result = {
-        "match": True,
-        "track_id": best_match.track_id,
-        "title": track_info["title"] if track_info else "Inconnu",
-        "artist": track_info.get("artist", "Inconnu"),
-        "confidence": round(best_match.confidence, 4),
+        "match": False,
+        "confidence": match_result.confidence,
         "processing_time_ms": processing_time_ms,
         "source": "local",
-        "aligned_hashes": best_match.aligned_hash_count,
-        "delta_offset_frames": best_match.best_delta_offset,
-        "top_candidates": [
-            {"track_id": c.track_id, "confidence": c.confidence, "aligned_hashes": c.aligned_hash_count}
-            for c in best_match.top_candidates[:3]
-        ] if hasattr(best_match, 'top_candidates') and best_match.top_candidates else []
+        "top_candidates": [],
+        "message": (
+            f"Confiance insuffisante: {match_result.confidence:.3f} "
+            f"< {matching_config.confidence_threshold}"
+            if match_result.confidence > 0
+            else "Aucun candidat"
+        )
     }
     
-    if verbose:
-        print(f"\n[MATCH] {result['title']} - {result['artist']}")
-        print(f"[MATCH] Confiance: {result['confidence']:.2%}")
-        print(f"[MATCH] Hashes alignés: {result['aligned_hashes']}")
-        print(f"[MATCH] Temps de traitement: {result['processing_time_ms']}ms")
+    # Simulation du fallback ARCCloud
+    print(f"\n[FALLBACK] Confidence trop faible ({result['confidence']:.3f}). Appel simulé à ARCCloud...")
+    print("[FALLBACK] Dans une implémentation réelle, l'API ARCCloud serait invoquée ici.")
+    result["source"] = "arccloud_simulated"
+    result["arccloud_status"] = "no_call_made_simulation_only"
+    
+    # Inclure le top-3 pour diagnostic même en cas d'échec
+    if match_result.top_candidates:
+        result["top_candidates"] = [
+            {"track_id": c.track_id, "confidence": c.confidence, "aligned_hashes": c.aligned_hash_count}
+            for c in match_result.top_candidates[:3]
+        ]
     
     return result
 
@@ -297,7 +271,7 @@ def format_output(result: Dict[str, Any], as_json: bool = False) -> str:
     
     if result.get("match"):
         lines.append("=" * 60)
-        lines.append("✅ MATCH TROUVÉ")
+        lines.append("MATCH TROUVE")
         lines.append("=" * 60)
         lines.append(f"Titre:       {result.get('title', 'N/A')}")
         lines.append(f"Artiste:     {result.get('artist', 'N/A')}")
@@ -313,7 +287,7 @@ def format_output(result: Dict[str, Any], as_json: bool = False) -> str:
                 lines.append(f"  {i}. Track #{cand['track_id']} - {cand['confidence']:.2%} ({cand['aligned_hashes']} hashes)")
     else:
         lines.append("=" * 60)
-        lines.append("❌ AUCUN MATCH")
+        lines.append("AUCUN MATCH")
         lines.append("=" * 60)
         
         if result.get("error"):

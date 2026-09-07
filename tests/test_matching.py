@@ -101,7 +101,7 @@ class TestFindBestMatch:
             456: {102: 3},  # Seulement 3
         }
         
-        track_id, confidence, candidates = find_best_match(
+        track_id, _, confidence, candidates = find_best_match(
             histogram,
             total_capture_hashes=100,
             min_absolute_matches=5,
@@ -120,7 +120,7 @@ class TestFindBestMatch:
             456: {102: 1},
         }
         
-        track_id, confidence, candidates = find_best_match(
+        track_id, _, confidence, candidates = find_best_match(
             histogram,
             total_capture_hashes=100,
             min_absolute_matches=5,
@@ -136,7 +136,7 @@ class TestFindBestMatch:
             123: {45: 4},  # 4 hashes = 4% de 100 (< 5% relatif)
         }
         
-        track_id, confidence, candidates = find_best_match(
+        track_id, _, confidence, candidates = find_best_match(
             histogram,
             total_capture_hashes=100,
             min_absolute_matches=5,
@@ -154,7 +154,7 @@ class TestFindBestMatch:
             4: {40: 10},  # 4ème track, ne sera pas dans top-3
         }
         
-        _, _, candidates = find_best_match(histogram, total_capture_hashes=100)
+        _, _, _, candidates = find_best_match(histogram, total_capture_hashes=100)
         
         assert len(candidates) <= 3
         assert 1 in candidates  # Meilleur
@@ -164,7 +164,7 @@ class TestFindBestMatch:
     
     def test_empty_histogram(self):
         """Histogramme vide → pas de match."""
-        track_id, confidence, candidates = find_best_match({}, total_capture_hashes=100)
+        track_id, _, confidence, candidates = find_best_match({}, total_capture_hashes=100)
         
         assert track_id is None
         assert confidence == 0.0

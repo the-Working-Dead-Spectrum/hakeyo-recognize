@@ -10,14 +10,16 @@ Sécurité (OWASP QWEN.md Section 7.2):
 """
 
 import argparse
+import re
 import sys
 import os
 from pathlib import Path
-import mimetypes
-from typing import Optional
 
 # Ajout du chemin racine au path pour les imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+if sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from engine import (
     load_audio_file,
@@ -25,7 +27,7 @@ from engine import (
     extract_peaks,
     generate_fingerprint,
 )
-from engine.config import SecurityConfig, FingerprintConfig
+from engine.config import SecurityConfig, FingerprintConfig, AudioConfig
 from storage import (
     Database,
     add_track,
@@ -33,46 +35,16 @@ from storage import (
     get_track_by_id,
     count_tracks,
     count_fingerprints,
+    validate_audio_file,
+    ValidationError,
 )
 
 
-def validate_audio_file(file_path: str, config: SecurityConfig = None) -> tuple[bool, Optional[str]]:
-    """
-    Valide un fichier audio selon les critères de sécurité OWASP.
-    
-    Args:
-        file_path: Chemin vers le fichier audio
-        config: Configuration de sécurité
-        
-    Returns:
-        Tuple (is_valid, error_message)
-            - is_valid: True si le fichier est valide
-            - error_message: Message d'erreur ou None
-    """
-    if config is None:
-        config = SecurityConfig()
-    
-    path = Path(file_path).resolve()
-    
-    # Vérifier que le fichier existe
-    if not path.exists():
-        return False, f"Fichier non trouvé: {file_path}"
-    
-    # Vérifier que c'est bien un fichier (pas un dossier)
-    if not path.is_file():
-        return False, f"Ce n'est pas un fichier: {file_path}"
-    
-    # Vérifier la taille du fichier
-    file_size_mb = path.stat().st_size / (1024 * 1024)
-    if file_size_mb > config.max_file_size_mb:
-        return False, f"Fichier trop volumineux: {file_size_mb:.2f} Mo > {config.max_file_size_mb} Mo maximum"
-    
-    # Vérifier le type MIME
-    mime_type, _ = mimetypes.guess_type(str(path))
-    if mime_type and mime_type not in config.allowed_mime_types:
-        return False, f"Type de fichier non autorisé: {mime_type}"
-    
-    return True, None
+def _slugify_title(stem: str) -> str:
+    """Nettoie le nom de fichier pour en faire un titre de piste lisible."""
+    title = stem.replace(" ", "_").replace("-", "_")
+    title = re.sub(r"_+", "_", title)
+    return title.strip("_")
 
 
 def ingest_file(
@@ -97,25 +69,34 @@ def ingest_file(
     if security_config is None:
         security_config = SecurityConfig()
     
-    # Valider le fichier avant traitement
-    is_valid, error_msg = validate_audio_file(file_path, security_config)
-    if not is_valid:
-        print(f"❌ Validation échouée: {error_msg}")
+    if fingerprint_config is None:
+        fingerprint_config = FingerprintConfig()
+    
+    audio_config = AudioConfig()
+    
+    # Valider le fichier avant traitement (validation OWASP centralisée)
+    try:
+        validated_path, metadata = validate_audio_file(
+            file_path,
+            sample_rate=audio_config.sample_rate,
+        )
+    except ValidationError as e:
+        print(f"❌ Validation échouée: {e}")
         return
     
     # Utiliser un chemin absolu et normalisé
-    file_path = str(Path(file_path).resolve())
+    file_path = str(validated_path.resolve())
     
-    # Définir le titre par défaut
+    # Définir le titre par défaut avec nettoyage des séparateurs
     if title is None:
-        title = Path(file_path).stem
+        title = _slugify_title(Path(file_path).stem)
     
     print(f"🎵 Traitement: {title}")
     
     try:
-        # 1. Charger le fichier audio
+        # 1. Charger le fichier audio avec resampling explicite
         print("   ├─ Chargement du fichier audio...")
-        signal, sr = load_audio_file(file_path)
+        signal, sr = load_audio_file(file_path, config=audio_config)
         print(f"   │  Sample rate: {sr} Hz, Durée: {len(signal)/sr:.2f}s")
         
         # 2. Calculer le spectrogramme

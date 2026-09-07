@@ -62,7 +62,7 @@ def find_best_match(
     total_capture_hashes: int,
     min_absolute_matches: int = 5,
     min_relative_ratio: float = 0.05,
-) -> Tuple[Optional[int], float, Dict[int, int]]:
+) -> Tuple[Optional[int], Optional[int], float, Dict[int, int]]:
     """
     Trouve le meilleur match à partir de l'histogramme des deltas.
     
@@ -79,27 +79,31 @@ def find_best_match(
         min_relative_ratio: Seuil relatif minimum (défaut: 0.05 = 5%)
     
     Returns:
-        Tuple (best_track_id, confidence_score, top_candidates)
+        Tuple (best_track_id, best_delta_offset, confidence_score, top_candidates)
         - best_track_id: None si aucun match ne passe les seuils
+        - best_delta_offset: Delta en frames du pic dominant (None si pas de match)
         - confidence_score: Entre 0 et 1 (pic_max / total_capture_hashes)
         - top_candidates: Dict {track_id: max_alignments} trié par score
     
     Example:
         >>> histogram = {123: {45: 50, 46: 10}, 456: {102: 3}}
         >>> find_best_match(histogram, total_capture_hashes=100)
-        (123, 0.50, {123: 50, 456: 3})
+        (123, 45, 0.50, {123: 50, 456: 3})
     """
     if not histogram:
-        return None, 0.0, {}
+        return None, None, 0.0, {}
     
     # Calculer le score maximum pour chaque track (meilleur delta)
     track_scores: Dict[int, int] = {}
+    track_best_deltas: Dict[int, int] = {}
     for track_id, deltas in histogram.items():
         if deltas:
-            track_scores[track_id] = max(deltas.values())
+            best_delta = max(deltas, key=deltas.get)
+            track_scores[track_id] = deltas[best_delta]
+            track_best_deltas[track_id] = best_delta
     
     if not track_scores:
-        return None, 0.0, {}
+        return None, None, 0.0, {}
     
     # Trier par score décroissant (top-3 pour diagnostic)
     sorted_tracks = sorted(track_scores.items(), key=lambda x: x[1], reverse=True)
@@ -107,6 +111,7 @@ def find_best_match(
     
     best_track_id = sorted_tracks[0][0]
     best_score = sorted_tracks[0][1]
+    best_delta = track_best_deltas.get(best_track_id)
     
     # Vérifier les seuils
     absolute_threshold = min_absolute_matches
@@ -115,9 +120,9 @@ def find_best_match(
     
     if best_score < effective_threshold:
         # Aucun match ne passe les seuils
-        return None, 0.0, top_candidates
+        return None, None, 0.0, top_candidates
     
     # Calculer la confiance normalisée
     confidence = best_score / total_capture_hashes if total_capture_hashes > 0 else 0.0
     
-    return best_track_id, confidence, top_candidates
+    return best_track_id, best_delta, confidence, top_candidates

@@ -87,6 +87,74 @@ class Database:
                 ON fingerprints(track_id, hash)
             """)
 
+    def get_track_by_id(self, track_id: int) -> Optional[dict]:
+        """
+        Récupère une piste par son ID.
+        
+        Args:
+            track_id: ID de la piste
+        
+        Returns:
+            Dictionnaire avec les infos de la piste ou None si non trouvé
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, title, artist, album, duration, created_at
+                FROM tracks
+                WHERE id = ?
+            """, (track_id,))
+            
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def find_matches_by_hashes(self, hashes: List[str]) -> List[Tuple[str, int, float]]:
+        """
+        Récupère tous les matches en BDD pour une liste de hashes donnée.
+        
+        Requête SQL batchée optimisée: SELECT ... WHERE hash = ANY(%s)
+        Retourne les correspondances brutes pour construction de l'histogramme.
+        
+        Args:
+            hashes: Liste des hashes de la capture à rechercher
+        
+        Returns:
+            Liste de tuples [(hash, track_id, offset_db), ...]
+            Ex: [("abc123", 1, 0.5), ("abc123", 2, 1.2), ("def456", 1, 2.3)]
+        
+        Note technique:
+            - Utilise WHERE hash IN (...) avec requête paramétrée
+            - Exploite l'index idx_fingerprint_hash (obligatoire selon QWEN.md Section 5)
+            - Chunking requis: SQLite plafonne à 999 paramètres par requête
+        """
+        if not hashes:
+            return []
+        
+        results = []
+        chunk_size = 500
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            for i in range(0, len(hashes), chunk_size):
+                chunk = hashes[i:i + chunk_size]
+                placeholders = ','.join('?' * len(chunk))
+                query = f"""
+                    SELECT hash, track_id, offset
+                    FROM fingerprints
+                    WHERE hash IN ({placeholders})
+                """
+                
+                cursor.execute(query, chunk)
+                results.extend([
+                    (row['hash'], row['track_id'], row['offset'])
+                    for row in cursor.fetchall()
+                ])
+        
+        return results
+
 
 def add_track(
     db: Database,
@@ -197,18 +265,7 @@ def get_track_by_id(db: Database, track_id: int) -> Optional[dict]:
     Returns:
         Dictionnaire avec les infos de la piste ou None si non trouvé
     """
-    with db.get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, title, artist, album, duration, created_at
-            FROM tracks
-            WHERE id = ?
-        """, (track_id,))
-        
-        row = cursor.fetchone()
-        if row:
-            return dict(row)
-        return None
+    return db.get_track_by_id(track_id)
 
 
 def get_fingerprints_by_hash(
@@ -323,24 +380,7 @@ def find_matches_by_hashes(
         Ex: [("abc123", 1, 0.5), ("abc123", 2, 1.2), ("def456", 1, 2.3)]
     
     Note technique:
-        - Utilise WHERE hash IN (...) avec requête paramétrée
+        - Chunking automatique sous 500 hashes par lot (limite SQLite)
         - Exploite l'index idx_fingerprint_hash (obligatoire selon QWEN.md Section 5)
-        - Conforme YAGNI: pas d'optimisation prématurée, une seule requête SQL
     """
-    if not hashes:
-        return []
-    
-    with db.get_connection() as conn:
-        cursor = conn.cursor()
-        
-        # Créer les placeholders pour la requête paramétrée
-        placeholders = ','.join('?' * len(hashes))
-        query = f"""
-            SELECT hash, track_id, offset
-            FROM fingerprints
-            WHERE hash IN ({placeholders})
-        """
-        
-        cursor.execute(query, hashes)
-        
-        return [(row['hash'], row['track_id'], row['offset']) for row in cursor.fetchall()]
+    return db.find_matches_by_hashes(hashes)

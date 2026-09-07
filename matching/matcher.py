@@ -22,6 +22,8 @@ class MatchResult:
     processing_time_ms: float = 0.0
     source: str = "local"
     top_candidates: Optional[Dict[int, int]] = None  # {track_id: alignments}
+    aligned_hash_count: Optional[int] = None
+    best_delta_offset: Optional[int] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Sérialisation pour API ou CLI."""
@@ -34,6 +36,8 @@ class MatchResult:
             "processing_time_ms": self.processing_time_ms,
             "source": self.source,
             "top_candidates": self.top_candidates,
+            "aligned_hash_count": self.aligned_hash_count,
+            "best_delta_offset": self.best_delta_offset,
         }
 
 
@@ -63,6 +67,7 @@ class Matcher:
         tolerance_frames: int = 1,
         min_absolute_matches: int = 5,
         min_relative_ratio: float = 0.05,
+        verbose: bool = False,
     ):
         """
         Initialise le matcher.
@@ -81,6 +86,7 @@ class Matcher:
         self.tolerance_frames = tolerance_frames
         self.min_absolute_matches = min_absolute_matches
         self.min_relative_ratio = min_relative_ratio
+        self.verbose = verbose
     
     def recognize(
         self,
@@ -117,6 +123,9 @@ class Matcher:
         # Retourne: [(hash, track_id, offset_db), ...]
         db_matches = self.db.find_matches_by_hashes(capture_hashes)
         
+        if self.verbose:
+            print(f"[MATCHING] {len(db_matches)} correspondances brutes trouvées")
+        
         if not db_matches:
             return MatchResult(
                 match=False,
@@ -142,7 +151,7 @@ class Matcher:
         
         # Étape 5: Trouver le meilleur match avec vérification des seuils
         total_hashes = len(capture_fingerprints)
-        best_track_id, confidence, top_candidates = find_best_match(
+        best_track_id, best_delta, confidence, top_candidates = find_best_match(
             histogram,
             total_hashes,
             min_absolute_matches=self.min_absolute_matches,
@@ -159,6 +168,8 @@ class Matcher:
                 confidence=confidence,
                 processing_time_ms=processing_time_ms,
                 top_candidates=top_candidates,
+                aligned_hash_count=None,
+                best_delta_offset=None,
             )
         
         # Récupérer les infos du track
@@ -172,4 +183,6 @@ class Matcher:
             confidence=confidence,
             processing_time_ms=processing_time_ms,
             top_candidates=top_candidates,
+            aligned_hash_count=best_delta if best_delta is not None else 0,
+            best_delta_offset=best_delta,
         )

@@ -40,7 +40,10 @@ class ValidationError(Exception):
     pass
 
 
-def validate_audio_file(file_path: str) -> Tuple[Path, dict]:
+def validate_audio_file(
+    file_path: str,
+    sample_rate: int = None,
+) -> Tuple[Path, dict]:
     """
     Valide un fichier audio et retourne son chemin résolu + métadonnées.
     
@@ -55,6 +58,7 @@ def validate_audio_file(file_path: str) -> Tuple[Path, dict]:
     
     Args:
         file_path: Chemin vers le fichier audio à valider
+        sample_rate: Fréquence d'échantillonnage cible (Hz). Si None, utilise le taux natif.
         
     Returns:
         Tuple (resolved_path, metadata) où :
@@ -108,7 +112,7 @@ def validate_audio_file(file_path: str) -> Tuple[Path, dict]:
     # 7. Vérification de la durée avec librosa (valide aussi le format audio réel)
     try:
         # Chargement partiel pour vérifier la durée sans charger tout le fichier en mémoire
-        y, sr = librosa.load(str(path), duration=5.0, mono=True)
+        y, sr = librosa.load(str(path), sr=sample_rate, duration=5.0, mono=True)
         duration = librosa.get_duration(y=y, sr=sr)
         
         # Si le fichier fait moins de 5s, on a la durée réelle
@@ -143,7 +147,7 @@ def validate_audio_file(file_path: str) -> Tuple[Path, dict]:
     return path, metadata
 
 
-def validate_audio_for_recognition(file_path: str) -> Tuple[Path, dict]:
+def validate_audio_for_recognition(file_path: str, sample_rate: int = None) -> Tuple[Path, dict]:
     """
     Wrapper spécialisé pour la reconnaissance (appelle validate_audio_file).
     
@@ -152,6 +156,7 @@ def validate_audio_for_recognition(file_path: str) -> Tuple[Path, dict]:
     
     Args:
         file_path: Chemin vers le fichier audio
+        sample_rate: Fréquence d'échantillonnage cible (Hz)
         
     Returns:
         Tuple (resolved_path, metadata)
@@ -159,4 +164,4 @@ def validate_audio_for_recognition(file_path: str) -> Tuple[Path, dict]:
     Raises:
         ValidationError: Si la validation échoue
     """
-    return validate_audio_file(file_path)
+    return validate_audio_file(file_path, sample_rate=sample_rate)

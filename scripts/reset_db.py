@@ -17,6 +17,9 @@ from typing import Optional
 # Ajout du chemin racine au path pour les imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+if sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
+
 from storage import Database, count_tracks, count_fingerprints
 
 
